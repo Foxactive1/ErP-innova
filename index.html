@@ -1159,9 +1159,9 @@ function renderDashboard(){
   const totalItems=APP.sales.reduce((s,v)=>s+v.items,0);
   const lowStock=APP.products.filter(p=>p.stock<=p.min).length;
   const kpis=[
-    {label:'Faturamento Total',value:brl(totalRev),delta:'+12.4%',dir:'up',color:'blue',icon:'fa-chart-line'},
-    {label:'Vendas Realizadas',value:APP.sales.length,delta:'+3 este mês',dir:'up',color:'teal',icon:'fa-receipt'},
-    {label:'Clientes Cadastrados',value:APP.clients.length,delta:'+1 novo',dir:'up',color:'yellow',icon:'fa-users'},
+    {label:'Faturamento Total',value:brl(totalRev),delta:'Total registrado',dir:'up',color:'blue',icon:'fa-chart-line'},
+    {label:'Vendas Realizadas',value:APP.sales.length,delta:'No histórico local',dir:'up',color:'teal',icon:'fa-receipt'},
+    {label:'Clientes Cadastrados',value:APP.clients.length,delta:'Na base local',dir:'up',color:'yellow',icon:'fa-users'},
     {label:'Alertas de Estoque',value:lowStock,delta:lowStock>0?'Atenção necessária':'Tudo ok',dir:lowStock>0?'down':'up',color:'red',icon:'fa-boxes-stacked'},
   ];
   document.getElementById('kpi-grid').innerHTML=kpis.map(k=>`
@@ -1336,6 +1336,7 @@ function finalizeSale(){
     if(!product){toast('Um produto do carrinho não existe mais','error');return}
     if(!Number.isInteger(item.qty)||item.qty<1){toast('Quantidade inválida no carrinho','warning');return}
     if(!Number.isFinite(product.price)||product.price<=0){toast(`Preço inválido para ${product.name}`,'warning');return}
+    if(!Number.isFinite(product.stock)||product.stock<0){toast(`Estoque inválido para ${product.name}`,'warning');return}
     if(product.stock<item.qty){toast(`Estoque insuficiente para ${product.name}`,'warning');return}
   }
   const sub=APP.cart.reduce((s,i)=>s+i.price*i.qty,0);
@@ -1476,12 +1477,14 @@ function filterEstoque(q){renderEstoque(APP.products.filter(p=>p.name.toLowerCas
 
 function addStockEntry(){
   const pid=+document.getElementById('entry-product').value;
-  const qty=+document.getElementById('entry-qty').value;
-  if(!qty||qty<=0){toast('Quantidade inválida','warning');return}
+  const qty=Number(document.getElementById('entry-qty').value);
+  if(!Number.isInteger(qty)||qty<=0){toast('Informe uma quantidade inteira maior que zero','warning');return}
   const p=APP.products.find(x=>x.id===pid);
   if(!p)return;
   p.stock+=qty;
-  const cost=+document.getElementById('entry-cost').value;
+  const costRaw=document.getElementById('entry-cost').value;
+  const cost=costRaw===''?0:Number(costRaw);
+  if(!Number.isFinite(cost)||cost<0){toast('Custo inválido','warning');return}
   if(cost>0) p.cost=cost;
   save();closeModal('entry-modal');renderEstoque();
   toast(`+${qty} unidades em ${p.name}`,'success');
@@ -1490,16 +1493,23 @@ function addStockEntry(){
 function addProduct(){
   const name=document.getElementById('pr-name').value.trim();
   if(!name){toast('Nome é obrigatório','warning');return}
-  const price=+document.getElementById('pr-price').value;
-  if(!price){toast('Preço é obrigatório','warning');return}
+  const price=Number(document.getElementById('pr-price').value);
+  const costRaw=document.getElementById('pr-cost').value;
+  const stockRaw=document.getElementById('pr-stock').value;
+  const minRaw=document.getElementById('pr-min').value;
+  const cost=costRaw===''?0:Number(costRaw);
+  const stock=stockRaw===''?0:Number(stockRaw);
+  const min=minRaw===''?5:Number(minRaw);
+  if(!Number.isFinite(price)||price<=0){toast('Informe um preço maior que zero','warning');return}
+  if(!Number.isFinite(cost)||cost<0){toast('Custo não pode ser negativo','warning');return}
+  if(!Number.isInteger(stock)||stock<0){toast('Estoque inicial deve ser um inteiro igual ou maior que zero','warning');return}
+  if(!Number.isInteger(min)||min<0){toast('Estoque mínimo deve ser um inteiro igual ou maior que zero','warning');return}
   APP.products.push({
     id:nextId(APP.products),
     code:document.getElementById('pr-code').value||`SKU-${nextId(APP.products).toString().padStart(3,'0')}`,
     name,category:document.getElementById('pr-cat').value,
     emoji:document.getElementById('pr-emoji').value||'📦',
-    price,cost:+document.getElementById('pr-cost').value||0,
-    stock:+document.getElementById('pr-stock').value||0,
-    min:+document.getElementById('pr-min').value||5
+    price,cost,stock,min
   });
   save();closeModal('add-product-modal');
   renderPage(APP.currentPage);
@@ -1570,13 +1580,20 @@ function renderRelatorios(){
   const productTotals=new Map();
   const salesWithLines=APP.sales.filter(s=>Array.isArray(s.lines));
   const legacySales=APP.sales.length-salesWithLines.length;
-  salesWithLines.forEach(s=>s.lines.forEach(line=>{
-    const key=String(line.productId??line.name);
-    const current=productTotals.get(key)||{name:line.name||'Produto removido',quantity:0,revenue:0};
-    current.quantity+=Number(line.quantity)||0;
-    current.revenue+=Number(line.lineTotal)||((Number(line.unitPrice)||0)*(Number(line.quantity)||0));
-    productTotals.set(key,current);
-  }));
+  salesWithLines.forEach(s=>{
+    const linesGross=s.lines.reduce((sum,line)=>sum+(Number(line.lineTotal)||((Number(line.unitPrice)||0)*(Number(line.quantity)||0))),0);
+    const total=Number(s.total);
+    const revenueFactor=linesGross>0&&Number.isFinite(total)?total/linesGross:1;
+    s.lines.forEach(line=>{
+      const key=String(line.productId??line.name);
+      const current=productTotals.get(key)||{name:line.name||'Produto removido',quantity:0,revenue:0};
+      const quantity=Number(line.quantity)||0;
+      const gross=Number(line.lineTotal)||((Number(line.unitPrice)||0)*quantity);
+      current.quantity+=quantity;
+      current.revenue+=gross*revenueFactor;
+      productTotals.set(key,current);
+    });
+  });
   const productRevenue=[...productTotals.values()].reduce((sum,p)=>sum+p.revenue,0);
   const productRows=[...productTotals.values()].sort((a,b)=>b.quantity-a.quantity).map(p=>
     `<tr><td>${escapeHTML(p.name)}</td><td>${p.quantity}</td><td>${brl(p.revenue)}</td><td>${productRevenue?((p.revenue/productRevenue)*100).toFixed(1):'0.0'}%</td></tr>`
@@ -1654,7 +1671,7 @@ function renderFinanceiro(){
 function addFinEntry(){
   const desc=document.getElementById('fin-desc').value.trim();
   const val=+document.getElementById('fin-val').value;
-  if(!desc||!val){toast('Descrição e valor são obrigatórios','warning');return}
+  if(!desc||!Number.isFinite(val)||val<=0){toast('Informe uma descrição e um valor maior que zero','warning');return}
   APP.fin.push({id:nextId(APP.fin),desc,type:document.getElementById('fin-type').value,
     category:document.getElementById('fin-cat').value,value:val,
     date:document.getElementById('fin-date').value||today()});
