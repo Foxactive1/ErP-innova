@@ -1145,6 +1145,7 @@ const brl=v=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).fo
 const pct=(a,b)=>b?((a/b)*100).toFixed(1)+'%':'0%';
 const today=()=>new Date().toISOString().split('T')[0];
 const nextId=arr=>arr.length?Math.max(...arr.map(x=>x.id))+1:1;
+const escapeHTML=value=>String(value??'').replace(/[&<>\"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[char]));
 
 // ──────────────────────────────────────
 // DASHBOARD
@@ -1243,8 +1244,8 @@ function renderProductGrid(products){
   if(!products.length){g.innerHTML=`<div class="empty-state" style="grid-column:1/-1"><i class="fa-solid fa-box-open"></i><h4>Nenhum produto</h4></div>`;return}
   g.innerHTML=products.map(p=>`
     <div class="product-card ${p.stock===0?'':''}${p.stock===0?'" style="opacity:.5;pointer-events:none':''}" onclick="addToCart(${p.id})">
-      <div class="p-icon">${p.emoji}</div>
-      <div class="p-name">${p.name}</div>
+      <div class="p-icon">${escapeHTML(p.emoji)}</div>
+      <div class="p-name">${escapeHTML(p.name)}</div>
       <div class="p-price">${brl(p.price)}</div>
       <div class="p-stock">${p.stock===0?'<span style="color:var(--danger)">Sem estoque</span>':`${p.stock} em estoque`}</div>
     </div>`).join('');
@@ -1259,7 +1260,7 @@ function filterProducts(val, btn, cat){
 
 function addToCart(id){
   const p=APP.products.find(x=>x.id===id);
-  if(!p||p.stock===0)return;
+  if(!p||p.stock<1)return;
   const ex=APP.cart.find(x=>x.id===id);
   if(ex){
     if(ex.qty>=p.stock){toast('Estoque insuficiente','warning');return}
@@ -1280,6 +1281,7 @@ function changeQty(id,delta){
   const item=APP.cart.find(x=>x.id===id);
   if(!item)return;
   const p=APP.products.find(x=>x.id===id);
+  if(!p){APP.cart=APP.cart.filter(x=>x.id!==id);renderCart();return}
   item.qty+=delta;
   if(item.qty<=0) APP.cart=APP.cart.filter(x=>x.id!==id);
   if(item.qty>p.stock){item.qty=p.stock;toast('Limite de estoque','warning')}
@@ -1301,8 +1303,8 @@ function renderCart(){
   const total=sub*(1-disc/100);
   container.innerHTML=APP.cart.map(item=>`
     <div class="cart-item">
-      <span style="font-size:20px">${item.emoji}</span>
-      <div class="cart-item-name">${item.name}</div>
+      <span style="font-size:20px">${escapeHTML(item.emoji)}</span>
+      <div class="cart-item-name">${escapeHTML(item.name)}</div>
       <div class="cart-item-qty">
         <div class="cart-qty-btn" onclick="changeQty(${item.id},-1)"><i class="fa-solid fa-minus"></i></div>
         <div class="cart-qty-val">${item.qty}</div>
@@ -1326,16 +1328,27 @@ function selectPay(el){
 
 function finalizeSale(){
   if(!APP.cart.length){toast('Carrinho vazio','warning');return}
+  const discRaw=document.getElementById('cart-disc').value;
+  const disc=discRaw===''?0:Number(discRaw);
+  if(!Number.isFinite(disc)||disc<0||disc>100){toast('Desconto deve estar entre 0% e 100%','warning');return}
+  for(const item of APP.cart){
+    const product=APP.products.find(x=>x.id===item.id);
+    if(!product){toast('Um produto do carrinho não existe mais','error');return}
+    if(!Number.isInteger(item.qty)||item.qty<1){toast('Quantidade inválida no carrinho','warning');return}
+    if(!Number.isFinite(product.price)||product.price<=0){toast(`Preço inválido para ${product.name}`,'warning');return}
+    if(product.stock<item.qty){toast(`Estoque insuficiente para ${product.name}`,'warning');return}
+  }
   const sub=APP.cart.reduce((s,i)=>s+i.price*i.qty,0);
-  const disc=+document.getElementById('cart-disc').value||0;
   const total=sub*(1-disc/100);
+  if(!Number.isFinite(total)||total<0){toast('Não foi possível calcular o total da venda','error');return}
   const clientSel=document.getElementById('pdv-client-sel');
-  const client=clientSel.value?APP.clients.find(c=>c.id==clientSel.value)?.name:'Consumidor Final';
+  const selectedClient=clientSel.value?APP.clients.find(c=>c.id==clientSel.value):null;
+  const client=selectedClient?.name||'Consumidor Final';
 
-  // Update stock
+  // All items were validated above, so stock can now be updated together.
   APP.cart.forEach(item=>{
     const p=APP.products.find(x=>x.id===item.id);
-    if(p) p.stock-=item.qty;
+    p.stock-=item.qty;
   });
 
   // Update client spending
@@ -1344,7 +1357,9 @@ function finalizeSale(){
     if(cl) cl.spent=(cl.spent||0)+total;
   }
 
-  const sale={id:nextId(APP.sales),client,items:APP.cart.reduce((s,i)=>s+i.qty,0),
+  const sale={id:nextId(APP.sales),client,clientId:selectedClient?selectedClient.id:null,
+    items:APP.cart.reduce((s,i)=>s+i.qty,0),
+    lines:APP.cart.map(item=>({productId:item.id,name:item.name,unitPrice:item.price,quantity:item.qty,lineTotal:item.price*item.qty})),
     subtotal:sub,discount:disc,total,pay:APP.selectedPay,date:today()};
   APP.sales.push(sale);
   APP.fin.push({id:nextId(APP.fin),desc:`Venda #${String(sale.id).padStart(3,'0')}`,
@@ -1357,7 +1372,7 @@ function finalizeSale(){
   APP.cart=[];
   renderCart();
   document.getElementById('sale-modal-info').innerHTML=
-    `<strong>${brl(total)}</strong><br>Cliente: ${client}<br>Pagamento: ${APP.selectedPay}<br>Venda #${String(sale.id).padStart(3,'0')}`;
+    `<strong>${brl(total)}</strong><br>Cliente: ${escapeHTML(client)}<br>Pagamento: ${escapeHTML(APP.selectedPay)}<br>Venda #${String(sale.id).padStart(3,'0')}`;
   showModal('sale-modal');
   toast('Venda finalizada com sucesso!','success');
 }
@@ -1368,8 +1383,8 @@ function printReceipt(){
   w.document.write(`<html><body style="font-family:monospace;padding:20px;max-width:300px">
     <h2 style="text-align:center">InNovaERP</h2>
     <p style="text-align:center">InNovaIdeia</p>
-    <hr>Venda #${String(s.id).padStart(3,'0')}<br>Data: ${s.date}<br>Cliente: ${s.client}<br>
-    Pagamento: ${s.pay}<hr>Total: ${brl(s.total)}<br>Desconto: ${s.discount}%
+    <hr>Venda #${String(s.id).padStart(3,'0')}<br>Data: ${escapeHTML(s.date)}<br>Cliente: ${escapeHTML(s.client)}<br>
+    Pagamento: ${escapeHTML(s.pay)}<hr>Total: ${brl(s.total)}<br>Desconto: ${s.discount}%
     <hr style="border-style:dashed"><p style="text-align:center;font-size:12px">Obrigado!</p>
   </body></html>`);w.print();
 }
@@ -1382,9 +1397,9 @@ function renderClientes(list){
   document.getElementById('client-count-label').textContent=`${list.length} cliente(s) cadastrado(s)`;
   document.getElementById('client-table').innerHTML=list.map(c=>`
     <tr>
-      <td>${c.id}</td><td><strong>${c.name}</strong></td>
-      <td>${c.email||'—'}</td><td>${c.tel||'—'}</td>
-      <td><span class="tag ${c.segment==='VIP'?'tag-warning':c.segment==='Regular'?'tag-info':'tag-neutral'}">${c.segment}</span></td>
+      <td>${c.id}</td><td><strong>${escapeHTML(c.name)}</strong></td>
+      <td>${escapeHTML(c.email||'—')}</td><td>${escapeHTML(c.tel||'—')}</td>
+      <td><span class="tag ${c.segment==='VIP'?'tag-warning':c.segment==='Regular'?'tag-info':'tag-neutral'}">${escapeHTML(c.segment)}</span></td>
       <td><strong>${brl(c.spent||0)}</strong></td>
       <td>
         <button class="btn btn-outline btn-sm btn-icon" title="Editar" onclick="editClient(${c.id})"><i class="fa-solid fa-pen"></i></button>
@@ -1445,9 +1460,9 @@ function renderEstoque(list){
     const sClass=p.stock===0?'stock-low':p.stock<=p.min?'stock-warn':'stock-ok';
     const margin=p.cost?((p.price-p.cost)/p.price*100).toFixed(0)+'%':'—';
     return `<tr>
-      <td><code style="font-size:12px;background:var(--bg3);padding:2px 6px;border-radius:4px">${p.code}</code></td>
-      <td><strong>${p.emoji} ${p.name}</strong></td>
-      <td><span class="tag tag-neutral">${p.category}</span></td>
+      <td><code style="font-size:12px;background:var(--bg3);padding:2px 6px;border-radius:4px">${escapeHTML(p.code)}</code></td>
+      <td><strong>${escapeHTML(p.emoji)} ${escapeHTML(p.name)}</strong></td>
+      <td><span class="tag tag-neutral">${escapeHTML(p.category)}</span></td>
       <td>${brl(p.price)}</td><td>${brl(p.cost)}</td>
       <td class="${sClass}"><strong>${p.stock}</strong></td>
       <td>${p.min}</td><td>${status}</td>
@@ -1505,9 +1520,9 @@ function renderProdutos(){
   document.getElementById('products-table').innerHTML=APP.products.map(p=>{
     const margin=p.cost?((p.price-p.cost)/p.price*100).toFixed(0)+'%':'—';
     return `<tr>
-      <td><code style="font-size:12px;background:var(--bg3);padding:2px 6px;border-radius:4px">${p.code}</code></td>
-      <td><strong>${p.emoji} ${p.name}</strong></td>
-      <td><span class="tag tag-neutral">${p.category}</span></td>
+      <td><code style="font-size:12px;background:var(--bg3);padding:2px 6px;border-radius:4px">${escapeHTML(p.code)}</code></td>
+      <td><strong>${escapeHTML(p.emoji)} ${escapeHTML(p.name)}</strong></td>
+      <td><span class="tag tag-neutral">${escapeHTML(p.category)}</span></td>
       <td>${brl(p.price)}</td><td>${brl(p.cost)}</td>
       <td><span class="tag ${+margin>30?'tag-success':'tag-warning'}">${margin}</span></td>
       <td>${p.stock}</td>
@@ -1541,9 +1556,9 @@ function renderRelatorios(){
 
   document.getElementById('report-sales-table').innerHTML=APP.sales.slice().reverse().map(s=>`
     <tr>
-      <td>${s.date}</td>
+      <td>${escapeHTML(s.date)}</td>
       <td>#${String(s.id).padStart(3,'0')}</td>
-      <td>${s.client}</td><td>${s.items}</td>
+      <td>${escapeHTML(s.client)}</td><td>${s.items}</td>
       <td>${brl(s.subtotal)}</td>
       <td><span class="tag tag-warning">${s.discount}%</span></td>
       <td><strong>${brl(s.total)}</strong></td>
@@ -1551,23 +1566,46 @@ function renderRelatorios(){
     </tr>`).join('');
 
   // Products report
-  const prodMap={};
-  APP.sales.forEach(s=>{
-    // simulated since we don't store items detail
-  });
-  document.getElementById('report-products-table').innerHTML=APP.products.map(p=>
-    `<tr><td>${p.emoji} ${p.name}</td><td>${Math.floor(Math.random()*50)+1}</td><td>${brl(p.price*(Math.floor(Math.random()*50)+1))}</td><td>${(Math.random()*30+5).toFixed(1)}%</td></tr>`
+  // Product totals come from the item snapshot stored at checkout.
+  const productTotals=new Map();
+  const salesWithLines=APP.sales.filter(s=>Array.isArray(s.lines));
+  const legacySales=APP.sales.length-salesWithLines.length;
+  salesWithLines.forEach(s=>s.lines.forEach(line=>{
+    const key=String(line.productId??line.name);
+    const current=productTotals.get(key)||{name:line.name||'Produto removido',quantity:0,revenue:0};
+    current.quantity+=Number(line.quantity)||0;
+    current.revenue+=Number(line.lineTotal)||((Number(line.unitPrice)||0)*(Number(line.quantity)||0));
+    productTotals.set(key,current);
+  }));
+  const productRevenue=[...productTotals.values()].reduce((sum,p)=>sum+p.revenue,0);
+  const productRows=[...productTotals.values()].sort((a,b)=>b.quantity-a.quantity).map(p=>
+    `<tr><td>${escapeHTML(p.name)}</td><td>${p.quantity}</td><td>${brl(p.revenue)}</td><td>${productRevenue?((p.revenue/productRevenue)*100).toFixed(1):'0.0'}%</td></tr>`
   ).join('');
+  const legacyNote=legacySales?`<tr><td colspan="4">${legacySales} venda(s) antiga(s) não têm itens detalhados e não entram neste relatório.</td></tr>`:'';
+  document.getElementById('report-products-table').innerHTML=productRows+legacyNote||'<tr><td colspan="4">Ainda não há itens vendidos registrados.</td></tr>';
 
-  // Clients report
-  document.getElementById('report-clients-table').innerHTML=APP.clients.sort((a,b)=>(b.spent||0)-(a.spent||0)).map(c=>`
-    <tr>
-      <td><strong>${c.name}</strong></td>
-      <td>${Math.floor(Math.random()*10)+1}</td>
-      <td>${brl(c.spent||0)}</td>
-      <td>${brl(c.spent?c.spent/(Math.floor(Math.random()*10)+1):0)}</td>
-      <td><span class="tag ${c.segment==='VIP'?'tag-warning':c.segment==='Regular'?'tag-info':'tag-neutral'}">${c.segment}</span></td>
-    </tr>`).join('');
+  // Client metrics are calculated from recorded sales, never randomized.
+  const clientTotals=new Map();
+  APP.sales.forEach(s=>{
+    const client=APP.clients.find(c=>s.clientId!=null&&c.id===s.clientId)
+      ||APP.clients.find(c=>c.name===s.client);
+    if(!client)return;
+    const current=clientTotals.get(client.id)||{purchases:0,total:0};
+    current.purchases+=1;
+    current.total+=Number(s.total)||0;
+    clientTotals.set(client.id,current);
+  });
+  document.getElementById('report-clients-table').innerHTML=APP.clients.slice().sort((a,b)=>(clientTotals.get(b.id)?.total||0)-(clientTotals.get(a.id)?.total||0)).map(c=>{
+    const metrics=clientTotals.get(c.id)||{purchases:0,total:0};
+    const average=metrics.purchases?metrics.total/metrics.purchases:0;
+    return `<tr>
+      <td><strong>${escapeHTML(c.name)}</strong></td>
+      <td>${metrics.purchases}</td>
+      <td>${brl(metrics.total)}</td>
+      <td>${brl(average)}</td>
+      <td><span class="tag ${c.segment==='VIP'?'tag-warning':c.segment==='Regular'?'tag-info':'tag-neutral'}">${escapeHTML(c.segment)}</span></td>
+    </tr>`;
+  }).join('');
 }
 
 function switchReportTab(tab,el){
@@ -1606,9 +1644,9 @@ function renderFinanceiro(){
 
   document.getElementById('fin-table').innerHTML=APP.fin.slice().reverse().map(f=>`
     <tr>
-      <td>${f.date}</td><td>${f.desc}</td>
+      <td>${escapeHTML(f.date)}</td><td>${escapeHTML(f.desc)}</td>
       <td><span class="tag ${f.type==='entrada'?'tag-success':'tag-danger'}">${f.type==='entrada'?'Entrada':'Saída'}</span></td>
-      <td><span class="tag tag-neutral">${f.category}</span></td>
+      <td><span class="tag tag-neutral">${escapeHTML(f.category)}</span></td>
       <td class="${f.type==='entrada'?'stock-ok':'stock-low'}"><strong>${f.type==='entrada'?'+':'-'} ${brl(f.value)}</strong></td>
     </tr>`).join('');
 }
@@ -1652,8 +1690,8 @@ function renderNotifs(){
   const zero=APP.products.filter(p=>p.stock===0);
   let html='';
   if(!low.length&&!zero.length){html='<div class="empty-state"><i class="fa-solid fa-bell-slash"></i><h4>Sem notificações</h4></div>';return}
-  zero.forEach(p=>html+=`<div class="activity-item"><div class="activity-icon alert"><i class="fa-solid fa-ban"></i></div><div class="activity-text"><strong>Sem estoque: ${p.name}</strong><p>Produto esgotado</p></div></div>`);
-  low.forEach(p=>html+=`<div class="activity-item"><div class="activity-icon stock"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="activity-text"><strong>Estoque baixo: ${p.name}</strong><p>${p.stock} un (mín: ${p.min})</p></div></div>`);
+  zero.forEach(p=>html+=`<div class="activity-item"><div class="activity-icon alert"><i class="fa-solid fa-ban"></i></div><div class="activity-text"><strong>Sem estoque: ${escapeHTML(p.name)}</strong><p>Produto esgotado</p></div></div>`);
+  low.forEach(p=>html+=`<div class="activity-item"><div class="activity-icon stock"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="activity-text"><strong>Estoque baixo: ${escapeHTML(p.name)}</strong><p>${p.stock} un (mín: ${p.min})</p></div></div>`);
   document.getElementById('notif-list').innerHTML=html;
 }
 
@@ -1664,7 +1702,11 @@ function toast(msg,type='info'){
   const icons={info:'fa-circle-info',success:'fa-circle-check',warning:'fa-triangle-exclamation',error:'fa-circle-xmark'};
   const t=document.createElement('div');
   t.className=`toast ${type}`;
-  t.innerHTML=`<i class="fa-solid ${icons[type]||icons.info}"></i><span>${msg}</span>`;
+  const icon=document.createElement('i');
+  icon.className=`fa-solid ${icons[type]||icons.info}`;
+  const message=document.createElement('span');
+  message.textContent=String(msg);
+  t.append(icon,message);
   document.getElementById('toast-container').appendChild(t);
   setTimeout(()=>{t.style.animation='toastIn .3s reverse';setTimeout(()=>t.remove(),300)},3000);
 }
