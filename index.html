@@ -1207,14 +1207,15 @@ function renderDashboard(){
 
 function updateBarChart(days){
   const range=[7,14,30].includes(Number(days))?Number(days):7;
-  const todayDate=new Date();
+  const todayKey=new Date().toISOString().slice(0,10);
+  const todayDate=new Date(`${todayKey}T00:00:00Z`);
   const points=Array.from({length:range},(_,index)=>{
     const date=new Date(todayDate);
-    date.setDate(todayDate.getDate()-(range-1-index));
-    const key=[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');
+    date.setUTCDate(todayDate.getUTCDate()-(range-1-index));
+    const key=date.toISOString().slice(0,10);
     const label=range===7
-      ?new Intl.DateTimeFormat('pt-BR',{weekday:'short'}).format(date).replace('.','')
-      :String(date.getDate()).padStart(2,'0');
+      ?new Intl.DateTimeFormat('pt-BR',{weekday:'short',timeZone:'UTC'}).format(date).replace('.','')
+      :String(date.getUTCDate()).padStart(2,'0');
     const revenue=APP.sales.filter(s=>s.date===key).reduce((sum,sale)=>sum+(Number(sale.total)||0),0);
     return {key,label,revenue};
   });
