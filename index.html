@@ -1206,13 +1206,23 @@ function renderDashboard(){
 }
 
 function updateBarChart(days){
-  const labels=['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].slice(0,+days<8?+days:7);
-  const vals=labels.map(()=>Math.floor(Math.random()*3000+500));
-  const max=Math.max(...vals);
-  document.getElementById('bar-chart').innerHTML=labels.map((l,i)=>`
+  const range=[7,14,30].includes(Number(days))?Number(days):7;
+  const todayDate=new Date();
+  const points=Array.from({length:range},(_,index)=>{
+    const date=new Date(todayDate);
+    date.setDate(todayDate.getDate()-(range-1-index));
+    const key=[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');
+    const label=range===7
+      ?new Intl.DateTimeFormat('pt-BR',{weekday:'short'}).format(date).replace('.','')
+      :String(date.getDate()).padStart(2,'0');
+    const revenue=APP.sales.filter(s=>s.date===key).reduce((sum,sale)=>sum+(Number(sale.total)||0),0);
+    return {key,label,revenue};
+  });
+  const max=Math.max(1,...points.map(point=>point.revenue));
+  document.getElementById('bar-chart').innerHTML=points.map((point,index)=>`
     <div class="chart-bar-wrap">
-      <div class="chart-bar ${i%2===0?'':'teal'}" style="height:${(vals[i]/max)*110}px" title="${brl(vals[i])}"></div>
-      <span class="chart-bar-label">${l}</span>
+      <div class="chart-bar ${index%2===0?'':'teal'}" style="height:${point.revenue?Math.max(4,(point.revenue/max)*110):4}px" title="${point.key}: ${brl(point.revenue)}"></div>
+      <span class="chart-bar-label">${point.label}</span>
     </div>`).join('');
 }
 
